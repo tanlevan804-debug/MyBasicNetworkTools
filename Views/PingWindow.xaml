@@ -1,0 +1,401 @@
+﻿<Window x:Class="MyBasicNetworkTools.Views.PingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="My Ping"
+        Height="750"
+        Width="1100"
+        WindowStartupLocation="CenterScreen">
+
+    <Grid Background="#F1F5F9">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="80"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+
+        <!-- ===================================================== -->
+        <!-- HEADER -->
+        <!-- ===================================================== -->
+
+        <Border Grid.Row="0"
+                Background="White">
+
+            <TextBlock Text="📡 My Ping"
+                       FontSize="28"
+                       FontWeight="Bold"
+                       VerticalAlignment="Center"
+                       Margin="25,0"/>
+
+        </Border>
+
+
+        <!-- ===================================================== -->
+        <!-- CONTENT -->
+        <!-- ===================================================== -->
+
+        <Grid Grid.Row="1"
+              Margin="25">
+
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+
+            <!-- ================================================= -->
+            <!-- INPUT PARAMETERS -->
+            <!-- ================================================= -->
+
+            <Border Grid.Row="0"
+                    Background="White"
+                    Padding="20"
+                    BorderBrush="#CBD5E1"
+                    BorderThickness="1">
+
+                <Grid>
+
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+
+                    <!-- TARGET -->
+
+                    <StackPanel Grid.Row="0"
+                                Grid.Column="0"
+                                Margin="0,0,15,0">
+
+                        <TextBlock Text="Target Host"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBox x:Name="TargetTextBox"
+                                 Text="google.com"
+                                 Height="38"
+                                 FontSize="15"
+                                 Padding="10,2"
+                                 VerticalContentAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- COUNT -->
+
+                    <StackPanel Grid.Row="0"
+                                Grid.Column="1"
+                                Margin="0,0,15,0">
+
+                        <TextBlock Text="Packet Count"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBox x:Name="CountTextBox"
+                                 Text="4"
+                                 Height="38"
+                                 FontSize="15"
+                                 Padding="10,2"
+                                 VerticalContentAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- BUFFER SIZE -->
+
+                    <StackPanel Grid.Row="0"
+                                Grid.Column="2"
+                                Margin="0,0,15,0">
+
+                        <TextBlock Text="Buffer Size"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBox x:Name="BufferSizeTextBox"
+                                 Text="32"
+                                 Height="38"
+                                 FontSize="15"
+                                 Padding="10,2"
+                                 VerticalContentAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- TIMEOUT -->
+
+                    <StackPanel Grid.Row="0"
+                                Grid.Column="3"
+                                Margin="0,0,15,0">
+
+                        <TextBlock Text="Timeout (ms)"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBox x:Name="TimeoutTextBox"
+                                 Text="3000"
+                                 Height="38"
+                                 FontSize="15"
+                                 Padding="10,2"
+                                 VerticalContentAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- TTL -->
+
+                    <StackPanel Grid.Row="0"
+                                Grid.Column="4">
+
+                        <TextBlock Text="TTL"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,6"/>
+
+                        <TextBox x:Name="TtlTextBox"
+                                 Text="128"
+                                 Height="38"
+                                 FontSize="15"
+                                 Padding="10,2"
+                                 VerticalContentAlignment="Center"/>
+
+                    </StackPanel>
+
+
+                    <!-- DON'T FRAGMENT -->
+
+                    <CheckBox x:Name="DontFragmentCheckBox"
+                              Grid.Row="1"
+                              Grid.Column="0"
+                              Content="Don't Fragment (DF)"
+                              FontWeight="Bold"
+                              Margin="0,15,0,0"
+                              VerticalAlignment="Center"/>
+
+                </Grid>
+
+            </Border>
+
+
+            <!-- ================================================= -->
+            <!-- BUTTONS -->
+            <!-- ================================================= -->
+
+            <StackPanel Grid.Row="1"
+                        Orientation="Horizontal"
+                        Margin="0,15,0,15">
+
+                <Button x:Name="PingButton"
+                        Content="PING"
+                        Width="110"
+                        Height="40"
+                        Margin="0,0,10,0"
+                        FontWeight="Bold"
+                        Click="PingButton_Click"/>
+
+                <Button x:Name="StopButton"
+                        Content="STOP"
+                        Width="110"
+                        Height="40"
+                        Margin="0,0,10,0"
+                        FontWeight="Bold"
+                        IsEnabled="False"
+                        Click="StopButton_Click"/>
+
+                <Button x:Name="ClearButton"
+                        Content="CLEAR"
+                        Width="110"
+                        Height="40"
+                        FontWeight="Bold"
+                        Click="ClearButton_Click"/>
+
+            </StackPanel>
+
+
+            <!-- ================================================= -->
+            <!-- RESULT TABLE -->
+            <!-- ================================================= -->
+
+            <Border Grid.Row="2"
+                    Background="White"
+                    Padding="15"
+                    BorderBrush="#CBD5E1"
+                    BorderThickness="1">
+
+                <Grid>
+
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+
+                    <TextBlock Grid.Row="0"
+                               Text="Ping Results"
+                               FontSize="18"
+                               FontWeight="Bold"
+                               Margin="0,0,0,10"/>
+
+
+                    <DataGrid x:Name="ResultGrid"
+                              Grid.Row="1"
+                              AutoGenerateColumns="False"
+                              CanUserAddRows="False"
+                              IsReadOnly="True"
+                              HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal">
+
+                        <DataGrid.Columns>
+
+                            <!-- SEQUENCE -->
+
+                            <DataGridTextColumn
+                                Header="Sequence"
+                                Binding="{Binding Sequence}"
+                                Width="90"/>
+
+
+                            <!-- IP -->
+
+                            <DataGridTextColumn
+                                Header="IP Address"
+                                Binding="{Binding IPAddress}"
+                                Width="180"/>
+
+
+                            <!-- BYTES -->
+
+                            <DataGridTextColumn
+                                Header="Bytes"
+                                Binding="{Binding Bytes}"
+                                Width="90"/>
+
+
+                            <!-- RTT -->
+
+                            <DataGridTextColumn
+                                Header="RTT (ms)"
+                                Binding="{Binding RTT}"
+                                Width="100"/>
+
+
+                            <!-- TTL -->
+
+                            <DataGridTextColumn
+                                Header="TTL"
+                                Binding="{Binding TTL}"
+                                Width="80"/>
+
+
+                            <!-- STATUS -->
+
+                            <DataGridTextColumn
+                                Header="Status"
+                                Binding="{Binding Status}"
+                                Width="220"/>
+
+                        </DataGrid.Columns>
+
+                    </DataGrid>
+
+                </Grid>
+
+            </Border>
+
+
+            <!-- ================================================= -->
+            <!-- STATISTICS -->
+            <!-- ================================================= -->
+
+            <Border Grid.Row="3"
+                    Background="White"
+                    Padding="15"
+                    Margin="0,15,0,0"
+                    BorderBrush="#CBD5E1"
+                    BorderThickness="1">
+
+                <Grid>
+
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+
+                    <!-- PACKET STATISTICS -->
+
+                    <StackPanel Grid.Column="0">
+
+                        <TextBlock Text="Packet Statistics"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,8"/>
+
+                        <TextBlock x:Name="SentText"
+                                   Text="Sent: 0"/>
+
+                        <TextBlock x:Name="ReceivedText"
+                                   Text="Received: 0"/>
+
+                        <TextBlock x:Name="LostText"
+                                   Text="Lost: 0"/>
+
+                        <TextBlock x:Name="LossText"
+                                   Text="Packet Loss: 0%"/>
+
+                    </StackPanel>
+
+
+                    <!-- RTT STATISTICS -->
+
+                    <StackPanel Grid.Column="1">
+
+                        <TextBlock Text="RTT Statistics"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,8"/>
+
+                        <TextBlock x:Name="MinText"
+                                   Text="Minimum: - ms"/>
+
+                        <TextBlock x:Name="MaxText"
+                                   Text="Maximum: - ms"/>
+
+                        <TextBlock x:Name="AverageText"
+                                   Text="Average: - ms"/>
+
+                    </StackPanel>
+
+
+                    <!-- CURRENT STATUS -->
+
+                    <StackPanel Grid.Column="2">
+
+                        <TextBlock Text="Status"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Margin="0,0,0,8"/>
+
+                        <TextBlock x:Name="StatusText"
+                                   Text="Ready"/>
+
+                    </StackPanel>
+
+                </Grid>
+
+            </Border>
+
+        </Grid>
+
+    </Grid>
+
+</Window>
