@@ -7,14 +7,11 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using MyBasicNetworkTools.Models;
 
 namespace MyBasicNetworkTools.Services
 {
     public class DnsService
     {
-        private const int DefaultPort = 53;
-
         // ============================================================
         // DNS RECORD TYPES
         // ============================================================
@@ -22,377 +19,373 @@ namespace MyBasicNetworkTools.Services
         private static readonly Dictionary<string, ushort> RecordTypes =
             new(StringComparer.OrdinalIgnoreCase)
             {
-                ["A"] = 1,
-                ["NS"] = 2,
-                ["CNAME"] = 5,
-                ["SOA"] = 6,
-                ["PTR"] = 12,
-                ["MX"] = 15,
-                ["TXT"] = 16,
-                ["AAAA"] = 28,
-                ["SRV"] = 33,
-
-                // Extended / commonly used records
-                ["DNAME"] = 39,
-                ["DS"] = 43,
-                ["RRSIG"] = 46,
-                ["NSEC"] = 47,
-                ["DNSKEY"] = 48,
-                ["CAA"] = 257,
-
-                ["ANY"] = 255
+                { "A", 1 },
+                { "NS", 2 },
+                { "CNAME", 5 },
+                { "SOA", 6 },
+                { "PTR", 12 },
+                { "MX", 15 },
+                { "TXT", 16 },
+                { "AAAA", 28 },
+                { "SRV", 33 },
+                { "DNAME", 39 },
+                { "OPT", 41 },
+                { "DS", 43 },
+                { "RRSIG", 46 },
+                { "NSEC", 47 },
+                { "DNSKEY", 48 },
+                { "ANY", 255 }
             };
 
+        private const ushort DNS_CLASS_IN = 1;
+
+        // EDNS(0)
+        private const ushort EDNS_TYPE_OPT = 41;
+
+        // 4096 bytes is the advertised UDP payload size.
+        private const ushort EDNS_UDP_PAYLOAD_SIZE = 4096;
+
         // ============================================================
-        // MAIN DNS QUERY
+        // PUBLIC API
         // ============================================================
 
         public async Task<DnsQueryResult> QueryAsync(
             string domain,
             string dnsServer,
             string recordType,
-            int timeout = 3000,
-            int port = DefaultPort,
+            int timeout = 5000,
+            int port = 53,
             CancellationToken cancellationToken = default)
         {
-            ValidateInput(
-                domain,
-                dnsServer,
-                recordType,
-                timeout,
-                port);
+            if (string.IsNullOrWhiteSpace(domain))
+                throw new ArgumentException("Domain không được để trống.");
 
-            recordType = recordType.Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(dnsServer))
+                throw new ArgumentException("DNS Server không được để trống.");
 
-            IPAddress serverIp =
-                IPAddress.Parse(dnsServer);
-
-            string queryName;
-
-            // ========================================================
-            // PTR
-            // ========================================================
-
-            if (recordType == "PTR")
+            if (!IPAddress.TryParse(dnsServer, out IPAddress? dnsIp) ||
+                dnsIp.AddressFamily != AddressFamily.InterNetwork)
             {
-                queryName = ConvertToPtrName(domain);
-            }
-            else
-            {
-                queryName = NormalizeDomain(domain);
+                throw new ArgumentException(
+                    "DNS Server phải là địa chỉ IPv4 hợp lệ.");
             }
 
-            // ========================================================
+            if (!RecordTypes.TryGetValue(recordType.Trim(), out ushort qtype))
+            {
+                throw new ArgumentException(
+                    $"Record type không được hỗ trợ: {recordType}");
+            }
+
+            if (timeout < 100)
+                timeout = 100;
+
+            if (timeout > 60000)
+                timeout = 60000;
+
+            if (port < 1 || port > 65535)
+                throw new ArgumentException("Port phải nằm trong khoảng 1-65535.");
+
+            // --------------------------------------------------------
+            // IDN / PUNYCODE
+            // --------------------------------------------------------
+
+            string normalizedDomain = NormalizeDomain(domain);
+
+            // PTR:
+            // Input:
+            // 8.8.8.8
+            //
+            // Query:
+            // 8.8.8.8.in-addr.arpa
+            //
+            if (qtype == 12 &&
+                IPAddress.TryParse(normalizedDomain, out IPAddress? ptrIp))
+            {
+                normalizedDomain = IPv4ToPtr(ptrIp);
+            }
+
+            // --------------------------------------------------------
             // TRANSACTION ID
-            // ========================================================
+            // --------------------------------------------------------
 
             ushort transactionId =
-                (ushort)Random.Shared.Next(0, 65536);
+                (ushort)Random.Shared.Next(0, ushort.MaxValue + 1);
 
-            // ========================================================
+            // --------------------------------------------------------
             // BUILD DNS REQUEST
-            // ========================================================
+            // --------------------------------------------------------
 
-            byte[] request =
-                BuildDnsRequest(
-                    queryName,
-                    RecordTypes[recordType],
-                    transactionId);
+            byte[] request = BuildDnsRequest(
+                normalizedDomain,
+                qtype,
+                transactionId);
+
+            Stopwatch totalWatch = Stopwatch.StartNew();
 
             // ========================================================
             // UDP QUERY
             // ========================================================
 
-            Stopwatch totalStopwatch =
-                Stopwatch.StartNew();
+            DnsQueryResult udpResult;
 
-            UdpReceiveResult response;
+            Stopwatch udpWatch = Stopwatch.StartNew();
 
-            using (UdpClient udpClient = new())
-            using (CancellationTokenSource timeoutCts =
-                   CancellationTokenSource.CreateLinkedTokenSource(
-                       cancellationToken))
+            try
             {
-                timeoutCts.CancelAfter(timeout);
-
-                CancellationToken token =
-                    timeoutCts.Token;
-
-                IPEndPoint serverEndPoint =
-                    new(serverIp, port);
-
-                try
-                {
-                    await udpClient.SendAsync(
-                        request,
-                        request.Length,
-                        serverEndPoint);
-
-                    UdpReceiveResult receiveResult =
-                        await udpClient
-                            .ReceiveAsync(token);
-
-                    response = receiveResult;
-                }
-                catch (OperationCanceledException)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-
-                    throw new TimeoutException(
-                        $"DNS Server không phản hồi sau {timeout} ms.");
-                }
-                catch (SocketException ex)
-                {
-                    throw new Exception(
-                        $"UDP DNS query thất bại: {ex.Message}",
-                        ex);
-                }
+                udpResult = await QueryUdpAsync(
+                    request,
+                    dnsIp,
+                    port,
+                    timeout,
+                    transactionId,
+                    cancellationToken);
+            }
+            finally
+            {
+                udpWatch.Stop();
             }
 
-            totalStopwatch.Stop();
+            long udpTime = udpWatch.ElapsedMilliseconds;
 
-            // ========================================================
-            // CHECK RESPONSE SOURCE
-            // ========================================================
-
-            if (!response.RemoteEndPoint.Address.Equals(serverIp) ||
-                response.RemoteEndPoint.Port != port)
-            {
-                throw new Exception(
-                    "DNS Response đến từ DNS Server không đúng.");
-            }
-
-            byte[] responseBytes =
-                response.Buffer;
-
-            // ========================================================
-            // PARSE UDP RESPONSE
-            // ========================================================
-
-            DnsQueryResult result =
-                ParseDnsResponse(
-                    responseBytes,
-                    transactionId);
-
-            result.DnsServer =
-                $"{serverIp}:{port}";
-
-            result.Protocol = "UDP";
-
-            result.QueryTime =
-                totalStopwatch.ElapsedMilliseconds;
-
-            result.RawPacketHex =
-                ConvertToHex(responseBytes);
+            udpResult.UdpQueryTime = udpTime;
+            udpResult.TcpQueryTime = 0;
+            udpResult.TotalQueryTime = udpTime;
+            udpResult.QueryTime = udpTime;
 
             // ========================================================
             // TCP FALLBACK
             // ========================================================
-            //
-            // Nếu TC = 1:
-            //
-            // UDP response bị truncate.
-            //
-            // Khi đó phải query lại bằng TCP.
-            // ========================================================
 
-            if (result.Truncated)
+            if (udpResult.Truncated)
             {
-                DnsQueryResult tcpResult =
-                    await QueryTcpAsync(
-                        serverIp,
-                        port,
+                Stopwatch tcpWatch = Stopwatch.StartNew();
+
+                DnsQueryResult tcpResult;
+
+                try
+                {
+                    tcpResult = await QueryTcpAsync(
                         request,
-                        transactionId,
+                        dnsIp,
+                        port,
                         timeout,
-                        result.QueryTime,
+                        transactionId,
                         cancellationToken);
+                }
+                finally
+                {
+                    tcpWatch.Stop();
+                }
+
+                long tcpTime = tcpWatch.ElapsedMilliseconds;
+
+                totalWatch.Stop();
+
+                tcpResult.UdpQueryTime = udpTime;
+                tcpResult.TcpQueryTime = tcpTime;
+                tcpResult.TotalQueryTime = totalWatch.ElapsedMilliseconds;
+
+                // QueryTime = tổng thời gian thực tế
+                tcpResult.QueryTime = tcpResult.TotalQueryTime;
 
                 return tcpResult;
             }
 
-            return result;
+            totalWatch.Stop();
+
+            udpResult.TotalQueryTime =
+                totalWatch.ElapsedMilliseconds;
+
+            udpResult.QueryTime =
+                udpResult.TotalQueryTime;
+
+            return udpResult;
         }
 
         // ============================================================
-        // VALIDATE INPUT
+        // UDP QUERY
         // ============================================================
 
-        private static void ValidateInput(
-            string domain,
-            string dnsServer,
-            string recordType,
-            int timeout,
-            int port)
-        {
-            if (string.IsNullOrWhiteSpace(domain))
-            {
-                throw new ArgumentException(
-                    "Domain không được để trống.");
-            }
-
-            if (string.IsNullOrWhiteSpace(dnsServer))
-            {
-                throw new ArgumentException(
-                    "DNS Server không được để trống.");
-            }
-
-            if (string.IsNullOrWhiteSpace(recordType))
-            {
-                throw new ArgumentException(
-                    "Record Type không được để trống.");
-            }
-
-            recordType =
-                recordType.Trim().ToUpperInvariant();
-
-            if (!RecordTypes.ContainsKey(recordType))
-            {
-                throw new ArgumentException(
-                    $"Record Type '{recordType}' không được hỗ trợ.");
-            }
-
-            if (!IPAddress.TryParse(
-                    dnsServer,
-                    out IPAddress? serverIp))
-            {
-                throw new ArgumentException(
-                    "DNS Server phải là địa chỉ IP hợp lệ.");
-            }
-
-            if (serverIp.AddressFamily !=
-                AddressFamily.InterNetwork)
-            {
-                throw new ArgumentException(
-                    "Hiện tại chương trình chỉ hỗ trợ DNS Server IPv4.");
-            }
-
-            if (timeout < 100)
-            {
-                throw new ArgumentException(
-                    "Timeout tối thiểu là 100 ms.");
-            }
-
-            if (timeout > 60000)
-            {
-                throw new ArgumentException(
-                    "Timeout tối đa là 60000 ms.");
-            }
-
-            if (port <= 0 || port > 65535)
-            {
-                throw new ArgumentException(
-                    "Port phải nằm trong khoảng 1-65535.");
-            }
-        }
-
-        // ============================================================
-        // TCP FALLBACK
-        // ============================================================
-
-        private async Task<DnsQueryResult> QueryTcpAsync(
-            IPAddress serverIp,
-            int port,
+        private async Task<DnsQueryResult> QueryUdpAsync(
             byte[] request,
-            ushort transactionId,
+            IPAddress dnsServer,
+            int port,
             int timeout,
-            long udpTime,
+            ushort expectedTransactionId,
             CancellationToken cancellationToken)
         {
-            Stopwatch stopwatch =
-                Stopwatch.StartNew();
+            using UdpClient client =
+                new(AddressFamily.InterNetwork);
 
-            using TcpClient tcpClient =
-                new();
+            IPEndPoint serverEndPoint =
+                new(dnsServer, port);
 
             using CancellationTokenSource timeoutCts =
+                new(timeout);
+
+            using CancellationTokenSource linkedCts =
                 CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken);
+                    cancellationToken,
+                    timeoutCts.Token);
 
-            timeoutCts.CancelAfter(timeout);
-
-            CancellationToken token =
-                timeoutCts.Token;
+            Stopwatch watch = Stopwatch.StartNew();
 
             try
             {
-                // ====================================================
-                // TCP CONNECT
-                // ====================================================
+                await client.SendAsync(
+                    request,
+                    request.Length,
+                    serverEndPoint);
 
-                await tcpClient.ConnectAsync(
-                    serverIp,
+                UdpReceiveResult response =
+                    await client.ReceiveAsync(
+                        linkedCts.Token);
+
+                watch.Stop();
+
+                // ----------------------------------------------------
+                // SOURCE VALIDATION
+                // ----------------------------------------------------
+
+                if (!response.RemoteEndPoint.Address.Equals(dnsServer) ||
+                    response.RemoteEndPoint.Port != port)
+                {
+                    throw new InvalidOperationException(
+                        "DNS response đến từ server không hợp lệ.");
+                }
+
+                if (response.Buffer.Length < 12)
+                {
+                    throw new InvalidOperationException(
+                        "DNS response quá ngắn: thiếu DNS Header.");
+                }
+
+                DnsQueryResult result =
+                    ParseDnsResponse(
+                        response.Buffer,
+                        expectedTransactionId);
+
+                result.DnsServer = dnsServer.ToString();
+                result.Protocol = "UDP";
+                result.RawPacketHex =
+                    BytesToHex(response.Buffer);
+
+                result.UdpQueryTime =
+                    watch.ElapsedMilliseconds;
+
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                watch.Stop();
+
+                if (cancellationToken.IsCancellationRequested)
+                    throw;
+
+                throw new TimeoutException(
+                    $"DNS UDP request timeout sau {timeout} ms.");
+            }
+            catch (SocketException ex)
+            {
+                watch.Stop();
+
+                throw new InvalidOperationException(
+                    $"DNS UDP socket error: {ex.Message}",
+                    ex);
+            }
+        }
+
+        // ============================================================
+        // TCP QUERY
+        // ============================================================
+
+        private async Task<DnsQueryResult> QueryTcpAsync(
+            byte[] request,
+            IPAddress dnsServer,
+            int port,
+            int timeout,
+            ushort expectedTransactionId,
+            CancellationToken cancellationToken)
+        {
+            using TcpClient client =
+                new(AddressFamily.InterNetwork);
+
+            using CancellationTokenSource timeoutCts =
+                new(timeout);
+
+            using CancellationTokenSource linkedCts =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    timeoutCts.Token);
+
+            Stopwatch watch = Stopwatch.StartNew();
+
+            try
+            {
+                await client.ConnectAsync(
+                    dnsServer,
                     port,
-                    token);
+                    linkedCts.Token);
 
-                using NetworkStream stream =
-                    tcpClient.GetStream();
+                NetworkStream stream =
+                    client.GetStream();
 
-                // ====================================================
-                // TCP DNS LENGTH PREFIX
-                // ====================================================
-                //
-                // DNS over TCP:
+                // ----------------------------------------------------
+                // TCP DNS:
                 //
                 // 2 bytes length
-                // +
-                // DNS message
-                // ====================================================
+                // + DNS message
+                // ----------------------------------------------------
 
                 if (request.Length > ushort.MaxValue)
                 {
-                    throw new Exception(
-                        "DNS request quá lớn cho TCP.");
+                    throw new InvalidOperationException(
+                        "DNS request quá lớn cho TCP DNS.");
                 }
 
-                ushort requestLength =
-                    (ushort)request.Length;
+                byte[] tcpRequest =
+                    new byte[2 + request.Length];
 
-                byte[] lengthPrefix =
-                {
-                    (byte)(requestLength >> 8),
-                    (byte)(requestLength & 0xFF)
-                };
+                tcpRequest[0] =
+                    (byte)(request.Length >> 8);
 
-                await stream.WriteAsync(
-                    lengthPrefix,
-                    token);
+                tcpRequest[1] =
+                    (byte)(request.Length & 0xFF);
 
-                await stream.WriteAsync(
+                Buffer.BlockCopy(
                     request,
-                    token);
+                    0,
+                    tcpRequest,
+                    2,
+                    request.Length);
+
+                await stream.WriteAsync(
+                    tcpRequest,
+                    linkedCts.Token);
 
                 await stream.FlushAsync(
-                    token);
+                    linkedCts.Token);
 
-                // ====================================================
-                // READ RESPONSE LENGTH
-                // ====================================================
+                // ----------------------------------------------------
+                // READ 2-BYTE LENGTH
+                // ----------------------------------------------------
 
-                byte[] responseLengthBuffer =
-                    new byte[2];
+                byte[] lengthBuffer = new byte[2];
 
                 await ReadExactAsync(
                     stream,
-                    responseLengthBuffer,
-                    token);
+                    lengthBuffer,
+                    linkedCts.Token);
 
                 int responseLength =
-                    (responseLengthBuffer[0] << 8) |
-                    responseLengthBuffer[1];
+                    (lengthBuffer[0] << 8) |
+                    lengthBuffer[1];
 
-                if (responseLength <= 0)
+                if (responseLength < 12)
                 {
-                    throw new Exception(
-                        "DNS TCP response có kích thước không hợp lệ.");
+                    throw new InvalidOperationException(
+                        "DNS TCP response quá ngắn.");
                 }
-
-                // ====================================================
-                // READ RESPONSE
-                // ====================================================
 
                 byte[] response =
                     new byte[responseLength];
@@ -400,56 +393,50 @@ namespace MyBasicNetworkTools.Services
                 await ReadExactAsync(
                     stream,
                     response,
-                    token);
+                    linkedCts.Token);
 
-                stopwatch.Stop();
-
-                // ====================================================
-                // PARSE
-                // ====================================================
+                watch.Stop();
 
                 DnsQueryResult result =
                     ParseDnsResponse(
                         response,
-                        transactionId);
+                        expectedTransactionId);
 
                 result.DnsServer =
-                    $"{serverIp}:{port}";
+                    dnsServer.ToString();
 
                 result.Protocol = "TCP";
 
-                result.QueryTime =
-                    udpTime +
-                    stopwatch.ElapsedMilliseconds;
-
                 result.RawPacketHex =
-                    ConvertToHex(response);
+                    BytesToHex(response);
 
-                // TCP response không được tiếp tục fallback
-                result.Truncated = false;
+                result.TcpQueryTime =
+                    watch.ElapsedMilliseconds;
 
                 return result;
             }
             catch (OperationCanceledException)
             {
+                watch.Stop();
+
                 if (cancellationToken.IsCancellationRequested)
-                {
                     throw;
-                }
 
                 throw new TimeoutException(
-                    $"DNS TCP timeout sau {timeout} ms.");
+                    $"DNS TCP request timeout sau {timeout} ms.");
             }
-            catch (Exception ex)
+            catch (SocketException ex)
             {
-                throw new Exception(
-                    $"DNS TCP query thất bại: {ex.Message}",
+                watch.Stop();
+
+                throw new InvalidOperationException(
+                    $"DNS TCP socket error: {ex.Message}",
                     ex);
             }
         }
 
         // ============================================================
-        // READ EXACT BYTES
+        // READ EXACT NUMBER OF BYTES
         // ============================================================
 
         private static async Task ReadExactAsync(
@@ -457,208 +444,111 @@ namespace MyBasicNetworkTools.Services
             byte[] buffer,
             CancellationToken cancellationToken)
         {
-            int offset = 0;
+            int totalRead = 0;
 
-            while (offset < buffer.Length)
+            while (totalRead < buffer.Length)
             {
                 int read =
                     await stream.ReadAsync(
                         buffer.AsMemory(
-                            offset,
-                            buffer.Length - offset),
+                            totalRead,
+                            buffer.Length - totalRead),
                         cancellationToken);
 
                 if (read == 0)
                 {
-                    throw new Exception(
+                    throw new InvalidOperationException(
                         "DNS TCP connection bị đóng trước khi nhận đủ dữ liệu.");
                 }
 
-                offset += read;
+                totalRead += read;
             }
         }
 
         // ============================================================
-        // PTR
-        // ============================================================
-
-        private static string ConvertToPtrName(
-            string ip)
-        {
-            if (!IPAddress.TryParse(
-                    ip.Trim(),
-                    out IPAddress? address))
-            {
-                throw new ArgumentException(
-                    "PTR Query yêu cầu IPv4 hợp lệ.");
-            }
-
-            if (address.AddressFamily !=
-                AddressFamily.InterNetwork)
-            {
-                throw new ArgumentException(
-                    "PTR hiện chỉ hỗ trợ IPv4.");
-            }
-
-            byte[] bytes =
-                address.GetAddressBytes();
-
-            return
-                $"{bytes[3]}." +
-                $"{bytes[2]}." +
-                $"{bytes[1]}." +
-                $"{bytes[0]}." +
-                "in-addr.arpa";
-        }
-
-        // ============================================================
-        // NORMALIZE DOMAIN
-        // ============================================================
-
-        private static string NormalizeDomain(
-            string domain)
-        {
-            string result =
-                domain.Trim();
-
-            result =
-                result.TrimEnd('.');
-
-            if (string.IsNullOrWhiteSpace(result))
-            {
-                throw new ArgumentException(
-                    "Tên miền không hợp lệ.");
-            }
-
-            if (result.Length > 253)
-            {
-                throw new ArgumentException(
-                    "Tên miền không được vượt quá 253 ký tự.");
-            }
-
-            string[] labels =
-                result.Split(
-                    '.',
-                    StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (string label in labels)
-            {
-                if (label.Length == 0 ||
-                    label.Length > 63)
-                {
-                    throw new ArgumentException(
-                        "Mỗi DNS label phải dài từ 1 đến 63 ký tự.");
-                }
-            }
-
-            return result;
-        }
-
-        // ============================================================
-        // BUILD DNS REQUEST
+        // BUILD DNS REQUEST + EDNS(0)
         // ============================================================
 
         private static byte[] BuildDnsRequest(
             string domain,
-            ushort recordType,
+            ushort qtype,
             ushort transactionId)
         {
-            List<byte> packet =
-                new();
+            List<byte> packet = new();
 
             // --------------------------------------------------------
-            // Transaction ID
+            // DNS HEADER
             // --------------------------------------------------------
 
-            packet.Add(
-                (byte)(transactionId >> 8));
+            WriteUInt16(packet, transactionId);
 
-            packet.Add(
-                (byte)(transactionId & 0xFF));
-
-            // --------------------------------------------------------
-            // FLAGS
+            // Flags:
             //
             // QR = 0
             // Opcode = 0
+            // AA = 0
+            // TC = 0
             // RD = 1
-            // --------------------------------------------------------
+            // RA = 0
+            //
+            ushort flags = 0x0100;
 
-            packet.Add(0x01);
-            packet.Add(0x00);
+            WriteUInt16(packet, flags);
 
-            // --------------------------------------------------------
             // QDCOUNT = 1
-            // --------------------------------------------------------
+            WriteUInt16(packet, 1);
 
-            packet.Add(0x00);
-            packet.Add(0x01);
+            // ANCOUNT = 0
+            WriteUInt16(packet, 0);
 
-            // --------------------------------------------------------
-            // ANCOUNT
-            // NSCOUNT
-            // ARCOUNT
-            // --------------------------------------------------------
+            // NSCOUNT = 0
+            WriteUInt16(packet, 0);
 
-            packet.Add(0x00);
-            packet.Add(0x00);
-
-            packet.Add(0x00);
-            packet.Add(0x00);
-
-            packet.Add(0x00);
-            packet.Add(0x00);
+            // ARCOUNT = 1
+            //
+            // Vì có EDNS OPT.
+            //
+            WriteUInt16(packet, 1);
 
             // --------------------------------------------------------
-            // QNAME
+            // QUESTION
             // --------------------------------------------------------
 
-            string normalized =
-                domain.Trim().TrimEnd('.');
+            WriteDnsName(packet, domain);
 
-            string[] labels =
-                normalized.Split(
-                    '.',
-                    StringSplitOptions.RemoveEmptyEntries);
-
-            foreach (string label in labels)
-            {
-                byte[] labelBytes =
-                    Encoding.ASCII.GetBytes(label);
-
-                if (labelBytes.Length == 0 ||
-                    labelBytes.Length > 63)
-                {
-                    throw new ArgumentException(
-                        "DNS label phải dài từ 1 đến 63 byte.");
-                }
-
-                packet.Add(
-                    (byte)labelBytes.Length);
-
-                packet.AddRange(
-                    labelBytes);
-            }
-
-            // End QNAME
-            packet.Add(0x00);
-
-            // --------------------------------------------------------
             // QTYPE
-            // --------------------------------------------------------
+            WriteUInt16(packet, qtype);
 
-            packet.Add(
-                (byte)(recordType >> 8));
-
-            packet.Add(
-                (byte)(recordType & 0xFF));
-
-            // --------------------------------------------------------
             // QCLASS = IN
+            WriteUInt16(packet, DNS_CLASS_IN);
+
+            // --------------------------------------------------------
+            // EDNS(0) OPT RECORD
+            //
+            // NAME = root = 0
+            // TYPE = 41
+            // CLASS = UDP payload size
+            // TTL = extended RCODE/version/flags
+            // RDLEN = 0
             // --------------------------------------------------------
 
             packet.Add(0x00);
-            packet.Add(0x01);
+
+            // TYPE = OPT (41)
+            WriteUInt16(packet, EDNS_TYPE_OPT);
+
+            // CLASS = UDP payload size
+            WriteUInt16(
+                packet,
+                EDNS_UDP_PAYLOAD_SIZE);
+
+            // Extended RCODE = 0
+            // Version = 0
+            // Flags = 0
+            WriteUInt32(packet, 0);
+
+            // RDLEN = 0
+            WriteUInt16(packet, 0);
 
             return packet.ToArray();
         }
@@ -668,66 +558,54 @@ namespace MyBasicNetworkTools.Services
         // ============================================================
 
         private static DnsQueryResult ParseDnsResponse(
-            byte[] data,
+            byte[] packet,
             ushort expectedTransactionId)
         {
-            if (data == null ||
-                data.Length < 12)
+            if (packet == null || packet.Length < 12)
             {
-                throw new Exception(
-                    "DNS response quá ngắn.");
+                throw new InvalidOperationException(
+                    "DNS packet không hợp lệ: thiếu Header.");
             }
 
             int offset = 0;
 
-            // ========================================================
+            // --------------------------------------------------------
             // HEADER
-            // ========================================================
+            // --------------------------------------------------------
 
             ushort transactionId =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
             ushort flags =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
             ushort questionCount =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
             ushort answerCount =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
             ushort authorityCount =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
             ushort additionalCount =
-                ReadUInt16(
-                    data,
-                    ref offset);
+                ReadUInt16(packet, ref offset);
 
-            // ========================================================
+            // --------------------------------------------------------
             // TRANSACTION ID
-            // ========================================================
+            // --------------------------------------------------------
 
-            if (transactionId !=
-                expectedTransactionId)
+            if (transactionId != expectedTransactionId)
             {
-                throw new Exception(
-                    "Transaction ID trong DNS Response không khớp.");
+                throw new InvalidOperationException(
+                    $"Transaction ID không khớp. " +
+                    $"Expected=0x{expectedTransactionId:X4}, " +
+                    $"Received=0x{transactionId:X4}");
             }
 
-            // ========================================================
+            // --------------------------------------------------------
             // FLAGS
-            // ========================================================
+            // --------------------------------------------------------
 
             bool isResponse =
                 (flags & 0x8000) != 0;
@@ -735,7 +613,7 @@ namespace MyBasicNetworkTools.Services
             int opcode =
                 (flags >> 11) & 0x0F;
 
-            bool authoritative =
+            bool authoritativeAnswer =
                 (flags & 0x0400) != 0;
 
             bool truncated =
@@ -750,83 +628,97 @@ namespace MyBasicNetworkTools.Services
             int rcode =
                 flags & 0x000F;
 
+            // --------------------------------------------------------
+            // QR CHECK
+            // --------------------------------------------------------
+
             if (!isResponse)
             {
-                throw new Exception(
-                    "DNS packet nhận được không phải Response.");
+                throw new InvalidOperationException(
+                    "DNS packet không phải Response (QR=0).");
             }
 
-            // ========================================================
-            // RESULT
-            // ========================================================
+            // --------------------------------------------------------
+            // OPCODE
+            // --------------------------------------------------------
 
-            DnsQueryResult result =
-                new()
-                {
-                    TransactionId =
-                        transactionId,
-
-                    IsResponse =
-                        isResponse,
-
-                    Opcode =
-                        opcode,
-
-                    Status =
-                        GetRcodeName(rcode),
-
-                    RCode =
-                        rcode,
-
-                    AuthoritativeAnswer =
-                        authoritative,
-
-                    Truncated =
-                        truncated,
-
-                    RecursionDesired =
-                        recursionDesired,
-
-                    RecursionAvailable =
-                        recursionAvailable,
-
-                    QuestionCount =
-                        questionCount,
-
-                    AnswerCount =
-                        answerCount,
-
-                    AuthorityCount =
-                        authorityCount,
-
-                    AdditionalCount =
-                        additionalCount
-                };
-
-            // ========================================================
-            // QUESTIONS
-            // ========================================================
-
-            for (int i = 0;
-                 i < questionCount;
-                 i++)
+            if (opcode != 0)
             {
-                ReadDnsName(
-                    data,
-                    ref offset);
+                throw new InvalidOperationException(
+                    $"DNS Opcode không được hỗ trợ: {opcode}");
+            }
 
-                if (offset + 4 >
-                    data.Length)
+            DnsQueryResult result = new()
+            {
+                TransactionId = transactionId,
+
+                IsResponse = isResponse,
+
+                Opcode = opcode,
+
+                AuthoritativeAnswer =
+                    authoritativeAnswer,
+
+                Truncated = truncated,
+
+                RecursionDesired =
+                    recursionDesired,
+
+                RecursionAvailable =
+                    recursionAvailable,
+
+                RCode = rcode,
+
+                Status = GetRCodeDescription(rcode),
+
+                QuestionCount =
+                    questionCount,
+
+                AnswerCount =
+                    answerCount,
+
+                AuthorityCount =
+                    authorityCount,
+
+                AdditionalCount =
+                    additionalCount
+            };
+
+            // ========================================================
+            // QUESTION SECTION
+            // ========================================================
+
+            for (int i = 0; i < questionCount; i++)
+            {
+                string questionName =
+                    ReadDnsName(packet, ref offset);
+
+                EnsureBytesAvailable(
+                    packet,
+                    offset,
+                    4,
+                    "Question QTYPE/QCLASS");
+
+                ushort qtype =
+                    ReadUInt16(packet, ref offset);
+
+                ushort qclass =
+                    ReadUInt16(packet, ref offset);
+
+                if (qclass != DNS_CLASS_IN)
                 {
-                    throw new Exception(
-                        "DNS Question không hợp lệ.");
+                    throw new InvalidOperationException(
+                        $"DNS Class không được hỗ trợ: {qclass}");
                 }
 
-                // QTYPE
-                offset += 2;
-
-                // QCLASS
-                offset += 2;
+                result.Questions.Add(
+                    new DnsQuestion
+                    {
+                        Name = questionName,
+                        Type = GetRecordTypeName(qtype),
+                        TypeCode = qtype,
+                        Class = qclass
+                    });
             }
 
             // ========================================================
@@ -834,33 +726,33 @@ namespace MyBasicNetworkTools.Services
             // ========================================================
 
             ParseRecords(
-                data,
+                packet,
                 ref offset,
                 answerCount,
                 "Answer",
-                result.Records);
+                result);
 
             // ========================================================
             // AUTHORITY
             // ========================================================
 
             ParseRecords(
-                data,
+                packet,
                 ref offset,
                 authorityCount,
                 "Authority",
-                result.Records);
+                result);
 
             // ========================================================
             // ADDITIONAL
             // ========================================================
 
             ParseRecords(
-                data,
+                packet,
                 ref offset,
                 additionalCount,
                 "Additional",
-                result.Records);
+                result);
 
             return result;
         }
@@ -870,86 +762,198 @@ namespace MyBasicNetworkTools.Services
         // ============================================================
 
         private static void ParseRecords(
-            byte[] data,
+            byte[] packet,
             ref int offset,
-            int count,
+            ushort count,
             string section,
-            List<DnsRecord> records)
+            DnsQueryResult result)
         {
-            for (int i = 0;
-                 i < count;
-                 i++)
+            for (int i = 0; i < count; i++)
             {
-                if (offset >= data.Length)
+                if (offset >= packet.Length)
                 {
-                    throw new Exception(
-                        "DNS Record vượt quá packet.");
+                    throw new InvalidOperationException(
+                        $"DNS packet bị thiếu dữ liệu ở {section} section.");
                 }
 
                 string name =
-                    ReadDnsName(
-                        data,
-                        ref offset);
+                    ReadDnsName(packet, ref offset);
+
+                EnsureBytesAvailable(
+                    packet,
+                    offset,
+                    10,
+                    $"{section} Record Header");
 
                 ushort type =
-                    ReadUInt16(
-                        data,
-                        ref offset);
+                    ReadUInt16(packet, ref offset);
 
-                // CLASS
                 ushort dnsClass =
-                    ReadUInt16(
-                        data,
-                        ref offset);
+                    ReadUInt16(packet, ref offset);
 
                 uint ttl =
-                    ReadUInt32(
-                        data,
-                        ref offset);
+                    ReadUInt32(packet, ref offset);
 
-                ushort dataLength =
-                    ReadUInt16(
-                        data,
-                        ref offset);
+                ushort rdLength =
+                    ReadUInt16(packet, ref offset);
 
-                if (offset + dataLength >
-                    data.Length)
+                EnsureBytesAvailable(
+                    packet,
+                    offset,
+                    rdLength,
+                    $"{section} RDATA");
+
+                int rdataOffset = offset;
+
+                string value;
+
+                // ----------------------------------------------------
+                // EDNS OPT
+                // ----------------------------------------------------
+
+                if (type == EDNS_TYPE_OPT)
                 {
-                    throw new Exception(
-                        "DNS RDATA vượt quá packet.");
+                    value =
+                        ParseOptRecord(
+                            packet,
+                            rdataOffset,
+                            rdLength,
+                            dnsClass,
+                            ttl);
+                }
+                else
+                {
+                    value =
+                        ParseRecordValue(
+                            packet,
+                            rdataOffset,
+                            rdLength,
+                            type);
                 }
 
-                int rdataOffset =
-                    offset;
+                // Move offset after RDATA
+                offset += rdLength;
 
-                string value =
-                    ParseRecordValue(
-                        data,
-                        type,
-                        rdataOffset,
-                        dataLength);
+                DnsRecord record = new()
+                {
+                    RecordType =
+                        GetRecordTypeName(type),
 
-                offset += dataLength;
+                    RecordTypeCode = type,
 
-                records.Add(
-                    new DnsRecord
-                    {
-                        RecordType =
-                            GetRecordTypeName(type),
+                    Name = name,
 
-                        Name =
-                            name,
+                    Value = value,
 
-                        Value =
-                            value,
+                    TTL = ttl,
 
-                        TTL =
-                            ttl,
+                    Section = section,
 
-                        Section =
-                            section
-                    });
+                    Class = dnsClass
+                };
+
+                result.Records.Add(record);
+
+                // ----------------------------------------------------
+                // Save EDNS information
+                // ----------------------------------------------------
+
+                if (type == EDNS_TYPE_OPT)
+                {
+                    result.EdnsPresent = true;
+
+                    result.EdnsUdpPayloadSize =
+                        dnsClass;
+
+                    result.EdnsExtendedRCode =
+                        (int)((ttl >> 24) & 0xFF);
+
+                    result.EdnsVersion =
+                        (int)((ttl >> 16) & 0xFF);
+
+                    result.EdnsFlags =
+                        (ushort)(ttl & 0xFFFF);
+                }
             }
+        }
+
+        // ============================================================
+        // PARSE EDNS OPT
+        // ============================================================
+
+        private static string ParseOptRecord(
+            byte[] packet,
+            int offset,
+            int length,
+            ushort udpPayloadSize,
+            uint ttl)
+        {
+            int extendedRCode =
+                (int)((ttl >> 24) & 0xFF);
+
+            int version =
+                (int)((ttl >> 16) & 0xFF);
+
+            ushort flags =
+                (ushort)(ttl & 0xFFFF);
+
+            List<string> parts = new()
+            {
+                $"UDP Payload={udpPayloadSize}",
+                $"Extended RCODE={extendedRCode}",
+                $"Version={version}",
+                $"Flags=0x{flags:X4}"
+            };
+
+            // --------------------------------------------------------
+            // Parse EDNS options
+            //
+            // Option:
+            // 2 bytes code
+            // 2 bytes length
+            // N bytes data
+            // --------------------------------------------------------
+
+            int end = offset + length;
+
+            while (offset < end)
+            {
+                if (end - offset < 4)
+                {
+                    throw new InvalidOperationException(
+                        "EDNS OPT option bị thiếu header.");
+                }
+
+                ushort optionCode =
+                    ReadUInt16(packet, ref offset);
+
+                ushort optionLength =
+                    ReadUInt16(packet, ref offset);
+
+                if (optionLength >
+                    end - offset)
+                {
+                    throw new InvalidOperationException(
+                        "EDNS OPT option có length vượt quá packet.");
+                }
+
+                byte[] optionData =
+                    new byte[optionLength];
+
+                Buffer.BlockCopy(
+                    packet,
+                    offset,
+                    optionData,
+                    0,
+                    optionLength);
+
+                offset += optionLength;
+
+                parts.Add(
+                    $"Option {optionCode}: {BytesToHex(optionData)}");
+            }
+
+            return string.Join("; ", parts);
         }
 
         // ============================================================
@@ -957,252 +961,154 @@ namespace MyBasicNetworkTools.Services
         // ============================================================
 
         private static string ParseRecordValue(
-            byte[] data,
-            ushort type,
+            byte[] packet,
             int offset,
-            int length)
+            int length,
+            ushort type)
         {
             switch (type)
             {
-                // ====================================================
+                // ----------------------------------------------------
                 // A
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 1:
                     if (length != 4)
-                        return "Invalid IPv4";
+                    {
+                        return $"Invalid A RDATA length={length}";
+                    }
 
                     return new IPAddress(
-                        data
-                            .Skip(offset)
-                            .Take(4)
-                            .ToArray())
+                        packet.Skip(offset)
+                              .Take(4)
+                              .ToArray())
                         .ToString();
 
-                // ====================================================
+                // ----------------------------------------------------
                 // NS
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 2:
                     {
-                        int tempOffset =
-                            offset;
+                        int nameOffset = offset;
 
                         return ReadDnsName(
-                            data,
-                            ref tempOffset);
+                            packet,
+                            ref nameOffset);
                     }
 
-                // ====================================================
+                // ----------------------------------------------------
                 // CNAME
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 5:
                     {
-                        int tempOffset =
-                            offset;
+                        int nameOffset = offset;
 
                         return ReadDnsName(
-                            data,
-                            ref tempOffset);
+                            packet,
+                            ref nameOffset);
                     }
 
-                // ====================================================
+                // ----------------------------------------------------
                 // SOA
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 6:
                     return ParseSoaRecord(
-                        data,
+                        packet,
                         offset,
                         length);
 
-                // ====================================================
+                // ----------------------------------------------------
                 // PTR
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 12:
                     {
-                        int tempOffset =
-                            offset;
+                        int nameOffset = offset;
 
                         return ReadDnsName(
-                            data,
-                            ref tempOffset);
+                            packet,
+                            ref nameOffset);
                     }
 
-                // ====================================================
+                // ----------------------------------------------------
                 // MX
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 15:
-                    {
-                        if (length < 3)
-                            return "Invalid MX";
+                    return ParseMxRecord(
+                        packet,
+                        offset,
+                        length);
 
-                        int tempOffset =
-                            offset;
-
-                        ushort priority =
-                            ReadUInt16(
-                                data,
-                                ref tempOffset);
-
-                        string exchange =
-                            ReadDnsName(
-                                data,
-                                ref tempOffset);
-
-                        return
-                            $"Priority={priority}; " +
-                            $"Server={exchange}";
-                    }
-
-                // ====================================================
+                // ----------------------------------------------------
                 // TXT
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 16:
                     return ParseTxtRecord(
-                        data,
+                        packet,
                         offset,
                         length);
 
-                // ====================================================
+                // ----------------------------------------------------
                 // AAAA
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 28:
                     if (length != 16)
-                        return "Invalid IPv6";
-
-                    return new IPAddress(
-                        data
-                            .Skip(offset)
-                            .Take(16)
-                            .ToArray())
-                        .ToString();
-
-                // ====================================================
-                // SRV
-                // ====================================================
-
-                case 33:
                     {
-                        if (length < 7)
-                            return "Invalid SRV";
-
-                        int tempOffset =
-                            offset;
-
-                        ushort priority =
-                            ReadUInt16(
-                                data,
-                                ref tempOffset);
-
-                        ushort weight =
-                            ReadUInt16(
-                                data,
-                                ref tempOffset);
-
-                        ushort port =
-                            ReadUInt16(
-                                data,
-                                ref tempOffset);
-
-                        string target =
-                            ReadDnsName(
-                                data,
-                                ref tempOffset);
-
-                        return
-                            $"Priority={priority}; " +
-                            $"Weight={weight}; " +
-                            $"Port={port}; " +
-                            $"Target={target}";
+                        return $"Invalid AAAA RDATA length={length}";
                     }
 
-                // ====================================================
+                    return new IPAddress(
+                        packet.Skip(offset)
+                              .Take(16)
+                              .ToArray())
+                        .ToString();
+
+                // ----------------------------------------------------
+                // SRV
+                // ----------------------------------------------------
+
+                case 33:
+                    return ParseSrvRecord(
+                        packet,
+                        offset,
+                        length);
+
+                // ----------------------------------------------------
                 // DNAME
-                // ====================================================
+                // ----------------------------------------------------
 
                 case 39:
                     {
-                        int tempOffset =
-                            offset;
+                        int nameOffset = offset;
 
                         return ReadDnsName(
-                            data,
-                            ref tempOffset);
+                            packet,
+                            ref nameOffset);
                     }
 
-                // ====================================================
-                // DS
-                // ====================================================
+                // ----------------------------------------------------
+                // ANY
+                // ----------------------------------------------------
 
-                case 43:
-                    return ParseDsRecord(
-                        data,
+                case 255:
+                    return BytesToHex(
+                        packet,
                         offset,
                         length);
 
-                // ====================================================
-                // RRSIG
-                // ====================================================
-
-                case 46:
-                    return ParseRrsigRecord(
-                        data,
-                        offset,
-                        length);
-
-                // ====================================================
-                // NSEC
-                // ====================================================
-
-                case 47:
-                    return ParseNsecRecord(
-                        data,
-                        offset,
-                        length);
-
-                // ====================================================
-                // DNSKEY
-                // ====================================================
-
-                case 48:
-                    return ParseDnsKeyRecord(
-                        data,
-                        offset,
-                        length);
-
-                // ====================================================
-                // CAA
-                // ====================================================
-
-                case 257:
-                    return ParseCaaRecord(
-                        data,
-                        offset,
-                        length);
-
-                // ====================================================
-                // OPT
-                // ====================================================
-
-                case 41:
-                    return ParseOptRecord(
-                        data,
-                        offset,
-                        length);
-
-                // ====================================================
-                // UNKNOWN
-                // ====================================================
+                // ----------------------------------------------------
+                // Unknown
+                // ----------------------------------------------------
 
                 default:
-                    return ConvertToHex(
-                        data,
+                    return BytesToHex(
+                        packet,
                         offset,
                         length);
             }
@@ -1213,74 +1119,97 @@ namespace MyBasicNetworkTools.Services
         // ============================================================
 
         private static string ParseSoaRecord(
-            byte[] data,
+            byte[] packet,
             int offset,
             int length)
         {
-            int start =
-                offset;
+            int start = offset;
+            int end = offset + length;
 
-            int end =
-                offset + length;
-
-            if (end > data.Length)
-                return "Invalid SOA";
-
-            try
+            if (end > packet.Length)
             {
-                string primaryNameServer =
-                    ReadDnsName(
-                        data,
-                        ref offset);
-
-                string responsibleMailbox =
-                    ReadDnsName(
-                        data,
-                        ref offset);
-
-                uint serial =
-                    ReadUInt32(
-                        data,
-                        ref offset);
-
-                uint refresh =
-                    ReadUInt32(
-                        data,
-                        ref offset);
-
-                uint retry =
-                    ReadUInt32(
-                        data,
-                        ref offset);
-
-                uint expire =
-                    ReadUInt32(
-                        data,
-                        ref offset);
-
-                uint minimum =
-                    ReadUInt32(
-                        data,
-                        ref offset);
-
-                if (offset > end)
-                    return "Invalid SOA";
-
-                return
-                    $"Primary NS={primaryNameServer}; " +
-                    $"Responsible={responsibleMailbox}; " +
-                    $"Serial={serial}; " +
-                    $"Refresh={refresh}; " +
-                    $"Retry={retry}; " +
-                    $"Expire={expire}; " +
-                    $"Minimum={minimum}";
+                throw new InvalidOperationException(
+                    "SOA RDATA vượt quá packet.");
             }
-            catch
+
+            int nameOffset = offset;
+
+            string primaryNs =
+                ReadDnsName(
+                    packet,
+                    ref nameOffset);
+
+            offset = nameOffset;
+
+            string responsible =
+                ReadDnsName(
+                    packet,
+                    ref offset);
+
+            if (end - offset < 20)
             {
-                return
-                    $"Invalid SOA RDATA " +
-                    $"(offset={start}, length={length})";
+                throw new InvalidOperationException(
+                    "SOA RDATA thiếu 5 trường số.");
             }
+
+            uint serial =
+                ReadUInt32(packet, ref offset);
+
+            uint refresh =
+                ReadUInt32(packet, ref offset);
+
+            uint retry =
+                ReadUInt32(packet, ref offset);
+
+            uint expire =
+                ReadUInt32(packet, ref offset);
+
+            uint minimum =
+                ReadUInt32(packet, ref offset);
+
+            return
+                $"Primary NS={primaryNs}; " +
+                $"Responsible={responsible}; " +
+                $"Serial={serial}; " +
+                $"Refresh={refresh}; " +
+                $"Retry={retry}; " +
+                $"Expire={expire}; " +
+                $"Minimum={minimum}";
+        }
+
+        // ============================================================
+        // MX
+        // ============================================================
+
+        private static string ParseMxRecord(
+            byte[] packet,
+            int offset,
+            int length)
+        {
+            if (length < 3)
+            {
+                return "Invalid MX RDATA";
+            }
+
+            int end = offset + length;
+
+            ushort preference =
+                ReadUInt16(packet, ref offset);
+
+            string exchange =
+                ReadDnsName(
+                    packet,
+                    ref offset);
+
+            if (offset > end)
+            {
+                throw new InvalidOperationException(
+                    "MX RDATA vượt quá giới hạn.");
+            }
+
+            return
+                $"Preference={preference}; " +
+                $"Exchange={exchange}";
         }
 
         // ============================================================
@@ -1288,544 +1217,458 @@ namespace MyBasicNetworkTools.Services
         // ============================================================
 
         private static string ParseTxtRecord(
-            byte[] data,
+            byte[] packet,
             int offset,
             int length)
         {
-            int end =
-                offset + length;
+            int end = offset + length;
 
-            if (end > data.Length)
-                return "Invalid TXT";
+            List<string> strings = new();
 
-            List<string> parts =
-                new();
-
-            int current =
-                offset;
-
-            while (current < end)
+            while (offset < end)
             {
-                int textLength =
-                    data[current++];
+                int stringLength =
+                    packet[offset++];
 
-                if (current + textLength >
-                    end)
+                if (stringLength >
+                    end - offset)
                 {
-                    return "Invalid TXT";
+                    throw new InvalidOperationException(
+                        "TXT string length vượt quá RDATA.");
                 }
 
                 string text =
                     Encoding.UTF8.GetString(
-                        data,
-                        current,
-                        textLength);
+                        packet,
+                        offset,
+                        stringLength);
 
-                parts.Add(text);
+                strings.Add(text);
 
-                current +=
-                    textLength;
+                offset += stringLength;
             }
 
-            return string.Join(
-                " | ",
-                parts);
+            return string.Join(" ", strings);
         }
 
         // ============================================================
-        // DS
+        // SRV
         // ============================================================
 
-        private static string ParseDsRecord(
-            byte[] data,
+        private static string ParseSrvRecord(
+            byte[] packet,
             int offset,
             int length)
         {
-            if (length < 4)
-                return "Invalid DS";
-
-            int current =
-                offset;
-
-            ushort keyTag =
-                ReadUInt16(
-                    data,
-                    ref current);
-
-            byte algorithm =
-                data[current++];
-
-            byte digestType =
-                data[current++];
-
-            int digestLength =
-                length - 4;
-
-            string digest =
-                ConvertToHex(
-                    data,
-                    current,
-                    digestLength);
-
-            return
-                $"KeyTag={keyTag}; " +
-                $"Algorithm={algorithm}; " +
-                $"DigestType={digestType}; " +
-                $"Digest={digest}";
-        }
-
-        // ============================================================
-        // DNSKEY
-        // ============================================================
-
-        private static string ParseDnsKeyRecord(
-            byte[] data,
-            int offset,
-            int length)
-        {
-            if (length < 4)
-                return "Invalid DNSKEY";
-
-            int current =
-                offset;
-
-            ushort flags =
-                ReadUInt16(
-                    data,
-                    ref current);
-
-            byte protocol =
-                data[current++];
-
-            byte algorithm =
-                data[current++];
-
-            string publicKey =
-                ConvertToHex(
-                    data,
-                    current,
-                    length - 4);
-
-            return
-                $"Flags={flags}; " +
-                $"Protocol={protocol}; " +
-                $"Algorithm={algorithm}; " +
-                $"PublicKey={publicKey}";
-        }
-
-        // ============================================================
-        // CAA
-        // ============================================================
-
-        private static string ParseCaaRecord(
-            byte[] data,
-            int offset,
-            int length)
-        {
-            if (length < 2)
-                return "Invalid CAA";
-
-            int current =
-                offset;
-
-            byte flags =
-                data[current++];
-
-            byte tagLength =
-                data[current++];
-
-            if (current + tagLength >
-                offset + length)
+            if (length < 7)
             {
-                return "Invalid CAA";
+                return "Invalid SRV RDATA";
             }
 
-            string tag =
-                Encoding.ASCII.GetString(
-                    data,
-                    current,
-                    tagLength);
+            int end = offset + length;
 
-            current +=
-                tagLength;
+            ushort priority =
+                ReadUInt16(packet, ref offset);
 
-            string value =
-                Encoding.UTF8.GetString(
-                    data,
-                    current,
-                    offset + length - current);
+            ushort weight =
+                ReadUInt16(packet, ref offset);
 
-            return
-                $"Flags={flags}; " +
-                $"Tag={tag}; " +
-                $"Value={value}";
-        }
+            ushort port =
+                ReadUInt16(packet, ref offset);
 
-        // ============================================================
-        // RRSIG
-        // ============================================================
-
-        private static string ParseRrsigRecord(
-            byte[] data,
-            int offset,
-            int length)
-        {
-            if (length < 18)
-                return "Invalid RRSIG";
-
-            int current =
-                offset;
-
-            ushort typeCovered =
-                ReadUInt16(
-                    data,
-                    ref current);
-
-            byte algorithm =
-                data[current++];
-
-            byte labels =
-                data[current++];
-
-            uint originalTtl =
-                ReadUInt32(
-                    data,
-                    ref current);
-
-            uint expiration =
-                ReadUInt32(
-                    data,
-                    ref current);
-
-            uint inception =
-                ReadUInt32(
-                    data,
-                    ref current);
-
-            ushort keyTag =
-                ReadUInt16(
-                    data,
-                    ref current);
-
-            string signerName =
+            string target =
                 ReadDnsName(
-                    data,
-                    ref current);
+                    packet,
+                    ref offset);
+
+            if (offset > end)
+            {
+                throw new InvalidOperationException(
+                    "SRV RDATA vượt quá giới hạn.");
+            }
 
             return
-                $"TypeCovered={GetRecordTypeName(typeCovered)}; " +
-                $"Algorithm={algorithm}; " +
-                $"Labels={labels}; " +
-                $"OriginalTTL={originalTtl}; " +
-                $"Expiration={expiration}; " +
-                $"Inception={inception}; " +
-                $"KeyTag={keyTag}; " +
-                $"Signer={signerName}";
+                $"Priority={priority}; " +
+                $"Weight={weight}; " +
+                $"Port={port}; " +
+                $"Target={target}";
         }
 
         // ============================================================
-        // NSEC
-        // ============================================================
-
-        private static string ParseNsecRecord(
-            byte[] data,
-            int offset,
-            int length)
-        {
-            int end =
-                offset + length;
-
-            if (end > data.Length)
-                return "Invalid NSEC";
-
-            int current =
-                offset;
-
-            try
-            {
-                string nextDomain =
-                    ReadDnsName(
-                        data,
-                        ref current);
-
-                string bitmap =
-                    ConvertToHex(
-                        data,
-                        current,
-                        end - current);
-
-                return
-                    $"NextDomain={nextDomain}; " +
-                    $"TypeBitmap={bitmap}";
-            }
-            catch
-            {
-                return "Invalid NSEC";
-            }
-        }
-
-        // ============================================================
-        // OPT
-        // ============================================================
-
-        private static string ParseOptRecord(
-            byte[] data,
-            int offset,
-            int length)
-        {
-            if (length == 0)
-                return "EDNS OPT";
-
-            return
-                $"EDNS Options={ConvertToHex(data, offset, length)}";
-        }
-
-        // ============================================================
-        // DNS NAME DECODER
+        // SAFE DNS NAME PARSER
+        //
+        // Supports:
+        //   Normal labels
+        //   Compression pointer
+        //
+        // Protects against:
+        //   Invalid offset
+        //   Label > 63
+        //   Name > 255
+        //   Pointer outside packet
+        //   Pointer loop
+        //   Excessive pointer jumps
+        //   Malformed termination
         // ============================================================
 
         private static string ReadDnsName(
-            byte[] data,
+            byte[] packet,
             ref int offset)
         {
-            StringBuilder name =
-                new();
+            if (packet == null)
+                throw new ArgumentNullException(nameof(packet));
 
-            int current =
-                offset;
+            if (offset < 0 ||
+                offset >= packet.Length)
+            {
+                throw new InvalidOperationException(
+                    "DNS name offset nằm ngoài packet.");
+            }
 
-            bool jumped =
-                false;
+            int originalOffset = offset;
 
-            int jumpOffset =
-                -1;
+            int currentOffset = offset;
 
-            HashSet<int> visitedPointers =
-                new();
+            bool jumped = false;
+
+            int consumedBytes = 0;
+
+            int pointerSteps = 0;
+
+            const int MAX_POINTER_STEPS = 128;
+
+            HashSet<int> visitedPointers = new();
+
+            List<string> labels = new();
+
+            int totalNameLength = 0;
 
             while (true)
             {
-                if (current >= data.Length)
+                if (currentOffset < 0 ||
+                    currentOffset >= packet.Length)
                 {
-                    throw new Exception(
-                        "DNS name vượt quá packet.");
+                    throw new InvalidOperationException(
+                        "DNS name trỏ ra ngoài packet.");
                 }
 
-                byte length =
-                    data[current];
-
-                // ====================================================
-                // COMPRESSION POINTER
-                // ====================================================
-
-                if ((length & 0xC0) == 0xC0)
+                if (pointerSteps > MAX_POINTER_STEPS)
                 {
-                    if (current + 1 >=
-                        data.Length)
-                    {
-                        throw new Exception(
-                            "DNS compression pointer không hợp lệ.");
-                    }
-
-                    ushort pointer =
-                        (ushort)(
-                            ((length & 0x3F) << 8) |
-                            data[current + 1]);
-
-                    if (pointer >=
-                        data.Length)
-                    {
-                        throw new Exception(
-                            "DNS compression pointer vượt quá packet.");
-                    }
-
-                    if (!visitedPointers.Add(pointer))
-                    {
-                        throw new Exception(
-                            "DNS compression pointer bị loop.");
-                    }
-
-                    if (!jumped)
-                    {
-                        jumpOffset =
-                            current + 2;
-                    }
-
-                    current =
-                        pointer;
-
-                    jumped =
-                        true;
-
-                    continue;
+                    throw new InvalidOperationException(
+                        "DNS compression pointer vượt quá giới hạn.");
                 }
 
-                // ====================================================
-                // INVALID LABEL FORMAT
-                // ====================================================
+                byte lengthByte =
+                    packet[currentOffset];
 
-                if ((length & 0xC0) != 0)
-                {
-                    throw new Exception(
-                        "DNS label có format không hợp lệ.");
-                }
+                // ----------------------------------------------------
+                // ROOT
+                // ----------------------------------------------------
 
-                current++;
-
-                // ====================================================
-                // END OF NAME
-                // ====================================================
-
-                if (length == 0)
+                if (lengthByte == 0)
                 {
                     if (!jumped)
                     {
-                        offset =
-                            current;
+                        consumedBytes++;
                     }
-                    else
-                    {
-                        offset =
-                            jumpOffset;
-                    }
+
+                    currentOffset++;
 
                     break;
                 }
 
-                // DNS label max = 63 bytes
-                if (length > 63)
+                // ----------------------------------------------------
+                // COMPRESSION POINTER
+                //
+                // First two bits = 11
+                // ----------------------------------------------------
+
+                if ((lengthByte & 0xC0) == 0xC0)
                 {
-                    throw new Exception(
-                        "DNS label vượt quá 63 byte.");
+                    if (currentOffset + 1 >= packet.Length)
+                    {
+                        throw new InvalidOperationException(
+                            "DNS compression pointer bị thiếu byte thứ hai.");
+                    }
+
+                    ushort pointer =
+                        (ushort)(
+                            ((lengthByte & 0x3F) << 8) |
+                            packet[currentOffset + 1]);
+
+                    if (pointer >= packet.Length)
+                    {
+                        throw new InvalidOperationException(
+                            $"DNS compression pointer {pointer} " +
+                            $"nằm ngoài packet.");
+                    }
+
+                    // ------------------------------------------------
+                    // LOOP DETECTION
+                    // ------------------------------------------------
+
+                    if (!visitedPointers.Add(pointer))
+                    {
+                        throw new InvalidOperationException(
+                            "Phát hiện DNS compression pointer loop.");
+                    }
+
+                    pointerSteps++;
+
+                    if (!jumped)
+                    {
+                        consumedBytes += 2;
+
+                        // offset phải trỏ tới byte sau pointer
+                        offset =
+                            currentOffset + 2;
+
+                        jumped = true;
+                    }
+
+                    currentOffset = pointer;
+
+                    continue;
                 }
 
-                if (current + length >
-                    data.Length)
+                // ----------------------------------------------------
+                // RESERVED LABEL TYPE
+                // ----------------------------------------------------
+
+                if ((lengthByte & 0xC0) != 0)
                 {
-                    throw new Exception(
+                    throw new InvalidOperationException(
+                        "DNS label có kiểu bit không hợp lệ.");
+                }
+
+                int labelLength = lengthByte;
+
+                // DNS label tối đa 63 bytes
+                if (labelLength > 63)
+                {
+                    throw new InvalidOperationException(
+                        $"DNS label dài {labelLength} bytes, vượt quá 63.");
+                }
+
+                // ----------------------------------------------------
+                // CHECK DATA
+                // ----------------------------------------------------
+
+                if (currentOffset + 1 + labelLength >
+                    packet.Length)
+                {
+                    throw new InvalidOperationException(
                         "DNS label vượt quá packet.");
+                }
+
+                if (!jumped)
+                {
+                    consumedBytes +=
+                        1 + labelLength;
+                }
+
+                // ----------------------------------------------------
+                // CHECK TOTAL NAME LENGTH
+                //
+                // DNS full name <= 255 octets.
+                // ----------------------------------------------------
+
+                totalNameLength +=
+                    labelLength + 1;
+
+                if (totalNameLength > 255)
+                {
+                    throw new InvalidOperationException(
+                        "DNS name vượt quá 255 bytes.");
                 }
 
                 string label =
                     Encoding.ASCII.GetString(
-                        data,
-                        current,
-                        length);
+                        packet,
+                        currentOffset + 1,
+                        labelLength);
 
-                if (name.Length > 0)
-                {
-                    name.Append(".");
-                }
+                labels.Add(label);
 
-                name.Append(
-                    label);
-
-                current +=
-                    length;
-
-                if (!jumped)
-                {
-                    offset =
-                        current;
-                }
+                currentOffset +=
+                    1 + labelLength;
             }
 
-            if (name.Length == 0)
+            if (!jumped)
             {
+                offset =
+                    originalOffset + consumedBytes;
+            }
+
+            if (offset < 0 ||
+                offset > packet.Length)
+            {
+                throw new InvalidOperationException(
+                    "DNS name parser tạo offset không hợp lệ.");
+            }
+
+            if (labels.Count == 0)
                 return ".";
-            }
 
-            return name.ToString();
+            return string.Join(".", labels);
         }
 
         // ============================================================
-        // UINT16
+        // WRITE DNS NAME
         // ============================================================
 
-        private static ushort ReadUInt16(
-            byte[] data,
-            ref int offset)
+        private static void WriteDnsName(
+            List<byte> packet,
+            string domain)
         {
-            if (offset + 2 >
-                data.Length)
+            if (string.IsNullOrWhiteSpace(domain))
+                throw new ArgumentException(
+                    "Domain không hợp lệ.");
+
+            if (domain == ".")
             {
-                throw new Exception(
-                    "DNS packet thiếu UInt16.");
+                packet.Add(0);
+                return;
             }
 
-            ushort value =
-                (ushort)(
-                    (data[offset] << 8) |
-                    data[offset + 1]);
+            string trimmed =
+                domain.Trim().TrimEnd('.');
 
-            offset +=
-                2;
+            string[] labels =
+                trimmed.Split(
+                    '.',
+                    StringSplitOptions.RemoveEmptyEntries);
 
-            return value;
+            foreach (string label in labels)
+            {
+                byte[] bytes =
+                    Encoding.ASCII.GetBytes(label);
+
+                if (bytes.Length > 63)
+                {
+                    throw new ArgumentException(
+                        $"DNS label '{label}' vượt quá 63 bytes.");
+                }
+
+                packet.Add((byte)bytes.Length);
+
+                packet.AddRange(bytes);
+            }
+
+            // Root terminator
+            packet.Add(0);
         }
 
         // ============================================================
-        // UINT32
+        // IDN / PUNYCODE
         // ============================================================
 
-        private static uint ReadUInt32(
-            byte[] data,
-            ref int offset)
+        private static string NormalizeDomain(
+            string domain)
         {
-            if (offset + 4 >
-                data.Length)
+            string value =
+                domain.Trim();
+
+            if (value.Length == 0)
+                throw new ArgumentException(
+                    "Domain không hợp lệ.");
+
+            // Root
+            if (value == ".")
+                return ".";
+
+            // Remove final dot
+            value =
+                value.TrimEnd('.');
+
+            if (value.Length == 0)
+                return ".";
+
+            System.Globalization.IdnMapping idn =
+                new();
+
+            string[] labels =
+                value.Split(
+                    '.',
+                    StringSplitOptions.None);
+
+            List<string> asciiLabels = new();
+
+            foreach (string label in labels)
             {
-                throw new Exception(
-                    "DNS packet thiếu UInt32.");
+                if (string.IsNullOrWhiteSpace(label))
+                {
+                    throw new ArgumentException(
+                        "Domain chứa label rỗng.");
+                }
+
+                string asciiLabel;
+
+                try
+                {
+                    asciiLabel =
+                        idn.GetAscii(label);
+                }
+                catch (ArgumentException ex)
+                {
+                    throw new ArgumentException(
+                        $"Domain/IDN không hợp lệ: {label}",
+                        ex);
+                }
+
+                if (asciiLabel.Length > 63)
+                {
+                    throw new ArgumentException(
+                        $"DNS label '{label}' vượt quá 63 ký tự.");
+                }
+
+                asciiLabels.Add(
+                    asciiLabel.ToLowerInvariant());
             }
 
-            uint value =
-                ((uint)data[offset] << 24) |
-                ((uint)data[offset + 1] << 16) |
-                ((uint)data[offset + 2] << 8) |
-                data[offset + 3];
+            string asciiDomain =
+                string.Join(
+                    ".",
+                    asciiLabels);
 
-            offset +=
-                4;
+            if (asciiDomain.Length > 253)
+            {
+                throw new ArgumentException(
+                    "Domain vượt quá 253 ký tự.");
+            }
 
-            return value;
+            return asciiDomain;
         }
 
         // ============================================================
-        // RECORD TYPE
+        // IPv4 -> PTR
         // ============================================================
 
-        private static string GetRecordTypeName(
-            ushort type)
+        private static string IPv4ToPtr(
+            IPAddress address)
         {
-            return type switch
+            byte[] bytes =
+                address.GetAddressBytes();
+
+            if (bytes.Length != 4)
             {
-                1 => "A",
-                2 => "NS",
-                5 => "CNAME",
-                6 => "SOA",
-                12 => "PTR",
-                15 => "MX",
-                16 => "TXT",
-                28 => "AAAA",
-                33 => "SRV",
-                39 => "DNAME",
-                41 => "OPT",
-                43 => "DS",
-                46 => "RRSIG",
-                47 => "NSEC",
-                48 => "DNSKEY",
-                255 => "ANY",
-                257 => "CAA",
-                _ => $"TYPE{type}"
-            };
+                throw new ArgumentException(
+                    "PTR hiện chỉ hỗ trợ IPv4.");
+            }
+
+            return
+                $"{bytes[3]}." +
+                $"{bytes[2]}." +
+                $"{bytes[1]}." +
+                $"{bytes[0]}." +
+                "in-addr.arpa";
         }
 
         // ============================================================
         // RCODE
         // ============================================================
 
-        private static string GetRcodeName(
+        private static string GetRCodeDescription(
             int rcode)
         {
             return rcode switch
@@ -1841,58 +1684,294 @@ namespace MyBasicNetworkTools.Services
                 8 => "NXRRSET",
                 9 => "NOTAUTH",
                 10 => "NOTZONE",
-                _ => $"RCODE {rcode}"
+
+                _ => $"RCODE={rcode}"
             };
+        }
+
+        // ============================================================
+        // RECORD TYPE NAME
+        // ============================================================
+
+        private static string GetRecordTypeName(
+            ushort type)
+        {
+            foreach (var pair in RecordTypes)
+            {
+                if (pair.Value == type)
+                    return pair.Key;
+            }
+
+            return $"TYPE{type}";
+        }
+
+        // ============================================================
+        // READ UINT16
+        // ============================================================
+
+        private static ushort ReadUInt16(
+            byte[] packet,
+            ref int offset)
+        {
+            EnsureBytesAvailable(
+                packet,
+                offset,
+                2,
+                "UInt16");
+
+            ushort value =
+                (ushort)(
+                    (packet[offset] << 8) |
+                    packet[offset + 1]);
+
+            offset += 2;
+
+            return value;
+        }
+
+        // ============================================================
+        // READ UINT32
+        // ============================================================
+
+        private static uint ReadUInt32(
+            byte[] packet,
+            ref int offset)
+        {
+            EnsureBytesAvailable(
+                packet,
+                offset,
+                4,
+                "UInt32");
+
+            uint value =
+                ((uint)packet[offset] << 24) |
+                ((uint)packet[offset + 1] << 16) |
+                ((uint)packet[offset + 2] << 8) |
+                packet[offset + 3];
+
+            offset += 4;
+
+            return value;
+        }
+
+        // ============================================================
+        // WRITE UINT16
+        // ============================================================
+
+        private static void WriteUInt16(
+            List<byte> packet,
+            ushort value)
+        {
+            packet.Add(
+                (byte)(value >> 8));
+
+            packet.Add(
+                (byte)(value & 0xFF));
+        }
+
+        // ============================================================
+        // WRITE UINT32
+        // ============================================================
+
+        private static void WriteUInt32(
+            List<byte> packet,
+            uint value)
+        {
+            packet.Add(
+                (byte)(value >> 24));
+
+            packet.Add(
+                (byte)(value >> 16));
+
+            packet.Add(
+                (byte)(value >> 8));
+
+            packet.Add(
+                (byte)value);
+        }
+
+        // ============================================================
+        // CHECK BUFFER
+        // ============================================================
+
+        private static void EnsureBytesAvailable(
+            byte[] packet,
+            int offset,
+            int required,
+            string section)
+        {
+            if (offset < 0 ||
+                required < 0 ||
+                offset > packet.Length - required)
+            {
+                throw new InvalidOperationException(
+                    $"DNS packet bị thiếu dữ liệu tại {section}.");
+            }
         }
 
         // ============================================================
         // HEX
         // ============================================================
 
-        private static string ConvertToHex(
+        private static string BytesToHex(
             byte[] data)
         {
-            return ConvertToHex(
+            return BytesToHex(
                 data,
                 0,
                 data.Length);
         }
 
-        private static string ConvertToHex(
+        private static string BytesToHex(
             byte[] data,
             int offset,
             int length)
         {
-            if (data == null ||
-                length <= 0 ||
-                offset < 0 ||
-                offset >= data.Length)
+            if (data == null)
+                return string.Empty;
+
+            if (offset < 0 ||
+                length < 0 ||
+                offset > data.Length - length)
             {
-                return "";
+                throw new ArgumentOutOfRangeException();
             }
 
-            int end =
-                Math.Min(
-                    offset + length,
-                    data.Length);
+            StringBuilder sb =
+                new(length * 3);
 
-            StringBuilder builder =
-                new();
-
-            for (int i = offset;
-                 i < end;
-                 i++)
+            for (int i = 0; i < length; i++)
             {
-                builder.Append(
-                    data[i].ToString("X2"));
+                if (i > 0)
+                    sb.Append(' ');
 
-                if (i < end - 1)
-                {
-                    builder.Append(" ");
-                }
+                sb.Append(
+                    data[offset + i]
+                        .ToString("X2"));
             }
 
-            return builder.ToString();
+            return sb.ToString();
         }
+    }
+
+    // ================================================================
+    // DNS QUERY RESULT
+    // ================================================================
+
+    public class DnsQueryResult
+    {
+        public ushort TransactionId { get; set; }
+
+        public bool IsResponse { get; set; }
+
+        public int Opcode { get; set; }
+
+        public int RCode { get; set; }
+
+        public string Status { get; set; } = "";
+
+        public bool AuthoritativeAnswer { get; set; }
+
+        public bool Truncated { get; set; }
+
+        public bool RecursionDesired { get; set; }
+
+        public bool RecursionAvailable { get; set; }
+
+        public ushort QuestionCount { get; set; }
+
+        public ushort AnswerCount { get; set; }
+
+        public ushort AuthorityCount { get; set; }
+
+        public ushort AdditionalCount { get; set; }
+
+        // ------------------------------------------------------------
+        // SERVER / PROTOCOL
+        // ------------------------------------------------------------
+
+        public string DnsServer { get; set; } = "";
+
+        public string Protocol { get; set; } = "";
+
+        // ------------------------------------------------------------
+        // TIMING
+        // ------------------------------------------------------------
+
+        public long QueryTime { get; set; }
+
+        public long UdpQueryTime { get; set; }
+
+        public long TcpQueryTime { get; set; }
+
+        public long TotalQueryTime { get; set; }
+
+        // ------------------------------------------------------------
+        // EDNS
+        // ------------------------------------------------------------
+
+        public bool EdnsPresent { get; set; }
+
+        public ushort EdnsUdpPayloadSize { get; set; }
+
+        public int EdnsExtendedRCode { get; set; }
+
+        public int EdnsVersion { get; set; }
+
+        public ushort EdnsFlags { get; set; }
+
+        // ------------------------------------------------------------
+        // QUESTION
+        // ------------------------------------------------------------
+
+        public List<DnsQuestion> Questions { get; set; } = new();
+
+        // ------------------------------------------------------------
+        // RECORDS
+        // ------------------------------------------------------------
+
+        public List<DnsRecord> Records { get; set; } = new();
+
+        // ------------------------------------------------------------
+        // RAW PACKET
+        // ------------------------------------------------------------
+
+        public string RawPacketHex { get; set; } = "";
+    }
+
+    // ================================================================
+    // DNS QUESTION
+    // ================================================================
+
+    public class DnsQuestion
+    {
+        public string Name { get; set; } = "";
+
+        public string Type { get; set; } = "";
+
+        public ushort TypeCode { get; set; }
+
+        public ushort Class { get; set; }
+    }
+
+    // ================================================================
+    // DNS RECORD
+    // ================================================================
+
+    public class DnsRecord
+    {
+        public string RecordType { get; set; } = "";
+
+        public ushort RecordTypeCode { get; set; }
+
+        public string Name { get; set; } = "";
+
+        public string Value { get; set; } = "";
+
+        public uint TTL { get; set; }
+
+        public string Section { get; set; } = "";
+
+        public ushort Class { get; set; }
     }
 }

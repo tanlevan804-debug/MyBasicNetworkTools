@@ -13,7 +13,11 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
+
+        <!-- ===================================================== -->
         <!-- HEADER -->
+        <!-- ===================================================== -->
+
         <Border Grid.Row="0"
                 Background="White">
 
@@ -22,8 +26,13 @@
                        FontWeight="Bold"
                        VerticalAlignment="Center"
                        Margin="30,0"/>
+
         </Border>
 
+
+        <!-- ===================================================== -->
+        <!-- MAIN CONTENT -->
+        <!-- ===================================================== -->
 
         <Grid Grid.Row="1"
               Margin="25">
@@ -39,18 +48,18 @@
                 <!-- RECORD TABLE -->
                 <RowDefinition Height="*"/>
 
-                <!-- INFO -->
+                <!-- INFORMATION -->
                 <RowDefinition Height="Auto"/>
 
-                <!-- RAW -->
+                <!-- RAW PACKET -->
                 <RowDefinition Height="150"/>
 
             </Grid.RowDefinitions>
 
 
-            <!-- ====================================== -->
+            <!-- ================================================= -->
             <!-- INPUT PANEL -->
-            <!-- ====================================== -->
+            <!-- ================================================= -->
 
             <Border Grid.Row="0"
                     Background="White"
@@ -121,7 +130,7 @@
                     </ComboBox>
 
 
-                    <!-- RECORD -->
+                    <!-- RECORD TYPE -->
 
                     <TextBlock Grid.Row="0"
                                Grid.Column="4"
@@ -184,7 +193,7 @@
                              Text="5000"/>
 
 
-                    <!-- BUTTONS -->
+                    <!-- QUERY -->
 
                     <Button x:Name="QueryButton"
                             Grid.Row="1"
@@ -194,6 +203,9 @@
                             Margin="5"
                             FontWeight="Bold"
                             Click="QueryButton_Click"/>
+
+
+                    <!-- STOP -->
 
                     <Button x:Name="StopButton"
                             Grid.Row="1"
@@ -205,6 +217,9 @@
                             IsEnabled="False"
                             Click="StopButton_Click"/>
 
+
+                    <!-- CLEAR -->
+
                     <Button x:Name="ClearButton"
                             Grid.Row="1"
                             Grid.Column="4"
@@ -214,6 +229,9 @@
                             Margin="5"
                             FontWeight="Bold"
                             Click="ClearButton_Click"/>
+
+
+                    <!-- COPY -->
 
                     <Button x:Name="CopyButton"
                             Grid.Row="1"
@@ -230,9 +248,9 @@
             </Border>
 
 
-            <!-- ====================================== -->
+            <!-- ================================================= -->
             <!-- DNS HEADER -->
-            <!-- ====================================== -->
+            <!-- ================================================= -->
 
             <Border Grid.Row="1"
                     Background="White"
@@ -245,9 +263,12 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="30"/>
                         <RowDefinition Height="30"/>
+                        <RowDefinition Height="30"/>
                     </Grid.RowDefinitions>
 
+
                     <Grid.ColumnDefinitions>
+
                         <ColumnDefinition Width="180"/>
                         <ColumnDefinition Width="150"/>
                         <ColumnDefinition Width="150"/>
@@ -255,14 +276,18 @@
                         <ColumnDefinition Width="150"/>
                         <ColumnDefinition Width="150"/>
                         <ColumnDefinition Width="*"/>
+
                     </Grid.ColumnDefinitions>
 
+
+                    <!-- ROW 1 -->
 
                     <TextBlock Grid.Row="0"
                                Grid.Column="0"
                                Text="DNS HEADER"
                                FontSize="16"
                                FontWeight="Bold"/>
+
 
                     <TextBlock Grid.Row="0"
                                Grid.Column="1"
@@ -273,6 +298,7 @@
                                Grid.Row="0"
                                Grid.Column="2"/>
 
+
                     <TextBlock Grid.Row="0"
                                Grid.Column="3"
                                Text="Opcode:"
@@ -281,6 +307,7 @@
                     <TextBlock x:Name="OpcodeText"
                                Grid.Row="0"
                                Grid.Column="4"/>
+
 
                     <TextBlock Grid.Row="0"
                                Grid.Column="5"
@@ -292,6 +319,8 @@
                                Grid.Column="6"/>
 
 
+                    <!-- ROW 2 -->
+
                     <TextBlock Grid.Row="1"
                                Grid.Column="0"
                                Text="Flags:"
@@ -301,6 +330,7 @@
                                Grid.Row="1"
                                Grid.Column="1"
                                Grid.ColumnSpan="3"/>
+
 
                     <TextBlock Grid.Row="1"
                                Grid.Column="4"
@@ -312,14 +342,27 @@
                                Grid.Column="5"
                                Grid.ColumnSpan="2"/>
 
+
+                    <!-- ROW 3 : EDNS -->
+
+                    <TextBlock Grid.Row="2"
+                               Grid.Column="0"
+                               Text="EDNS:"
+                               FontWeight="Bold"/>
+
+                    <TextBlock x:Name="EdnsText"
+                               Grid.Row="2"
+                               Grid.Column="1"
+                               Grid.ColumnSpan="6"/>
+
                 </Grid>
 
             </Border>
 
 
-            <!-- ====================================== -->
+            <!-- ================================================= -->
             <!-- RECORD TABLE -->
-            <!-- ====================================== -->
+            <!-- ================================================= -->
 
             <Border Grid.Row="2"
                     Background="White"
@@ -334,21 +377,49 @@
 
                     <DataGrid.Columns>
 
+                        <!-- RECORD TYPE -->
+
                         <DataGridTextColumn Header="Type"
                                             Binding="{Binding RecordType}"
                                             Width="80"/>
 
+
+                        <!-- TYPE CODE -->
+
+                        <DataGridTextColumn Header="Type Code"
+                                            Binding="{Binding RecordTypeCode}"
+                                            Width="90"/>
+
+
+                        <!-- NAME -->
+
                         <DataGridTextColumn Header="Name"
                                             Binding="{Binding Name}"
-                                            Width="230"/>
+                                            Width="220"/>
+
+
+                        <!-- DATA -->
 
                         <DataGridTextColumn Header="Data / Value"
                                             Binding="{Binding Value}"
                                             Width="*"/>
 
+
+                        <!-- TTL -->
+
                         <DataGridTextColumn Header="TTL"
                                             Binding="{Binding TTL}"
-                                            Width="100"/>
+                                            Width="90"/>
+
+
+                        <!-- CLASS -->
+
+                        <DataGridTextColumn Header="Class"
+                                            Binding="{Binding Class}"
+                                            Width="80"/>
+
+
+                        <!-- SECTION -->
 
                         <DataGridTextColumn Header="Section"
                                             Binding="{Binding Section}"
@@ -361,9 +432,9 @@
             </Border>
 
 
-            <!-- ====================================== -->
+            <!-- ================================================= -->
             <!-- INFORMATION -->
-            <!-- ====================================== -->
+            <!-- ================================================= -->
 
             <Border Grid.Row="3"
                     Background="White"
@@ -373,12 +444,16 @@
 
                 <WrapPanel>
 
+                    <!-- STATUS -->
+
                     <TextBlock Text="Status:"
                                FontWeight="Bold"/>
 
                     <TextBlock x:Name="StatusText"
                                Margin="5,0,25,0"/>
 
+
+                    <!-- DNS SERVER -->
 
                     <TextBlock Text="DNS Server:"
                                FontWeight="Bold"/>
@@ -387,6 +462,8 @@
                                Margin="5,0,25,0"/>
 
 
+                    <!-- PROTOCOL -->
+
                     <TextBlock Text="Protocol:"
                                FontWeight="Bold"/>
 
@@ -394,34 +471,58 @@
                                Margin="5,0,25,0"/>
 
 
-                    <TextBlock Text="Query Time:"
+                    <!-- UDP TIME -->
+
+                    <TextBlock Text="UDP:"
                                FontWeight="Bold"/>
 
-                    <TextBlock x:Name="QueryTimeText"
-                               Margin="5,0,25,0"/>
+                    <TextBlock x:Name="UdpQueryTimeText"
+                               Margin="5,0,20,0"/>
 
+
+                    <!-- TCP TIME -->
+
+                    <TextBlock Text="TCP:"
+                               FontWeight="Bold"/>
+
+                    <TextBlock x:Name="TcpQueryTimeText"
+                               Margin="5,0,20,0"/>
+
+
+                    <!-- TOTAL TIME -->
+
+                    <TextBlock Text="Total:"
+                               FontWeight="Bold"/>
+
+                    <TextBlock x:Name="TotalQueryTimeText"
+                               Margin="5,0,20,0"/>
+
+
+                    <!-- AA -->
 
                     <TextBlock Text="AA:"
                                FontWeight="Bold"/>
 
                     <TextBlock x:Name="AaText"
-                               Margin="5,0,25,0"/>
+                               Margin="5,0,20,0"/>
 
+
+                    <!-- TC -->
 
                     <TextBlock Text="TC:"
                                FontWeight="Bold"/>
 
                     <TextBlock x:Name="TcText"
-                               Margin="5,0,25,0"/>
+                               Margin="5,0,20,0"/>
 
                 </WrapPanel>
 
             </Border>
 
 
-            <!-- ====================================== -->
+            <!-- ================================================= -->
             <!-- RAW PACKET -->
-            <!-- ====================================== -->
+            <!-- ================================================= -->
 
             <Border Grid.Row="4"
                     Background="White"
@@ -435,6 +536,9 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
+
+                    <!-- RAW HEADER -->
+
                     <StackPanel Orientation="Horizontal">
 
                         <TextBlock Text="Raw DNS Response (HEX)"
@@ -442,11 +546,13 @@
                                    FontWeight="Bold"
                                    VerticalAlignment="Center"/>
 
+
                         <Button Content="EXPORT TXT"
                                 Width="100"
                                 Height="25"
                                 Margin="25,0,5,0"
                                 Click="ExportTxtButton_Click"/>
+
 
                         <Button Content="EXPORT CSV"
                                 Width="100"
@@ -454,6 +560,9 @@
                                 Click="ExportCsvButton_Click"/>
 
                     </StackPanel>
+
+
+                    <!-- RAW DATA -->
 
                     <TextBox x:Name="RawPacketTextBox"
                              Grid.Row="1"
